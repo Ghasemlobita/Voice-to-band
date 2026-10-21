@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>صدا به ساز 🌙</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+:root{--bg:#f3f1fa;--card:#fff;--tx:#1b1838;--mut:#6b6890;--ac:#2f5bff;--ac2:#e8edff;--bd:#d9d6ee;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e0c1f;--card:#18152e;--tx:#ece9ff;--mut:#9a96c4;--ac:#6d8bff;--ac2:#242046;--bd:#2c2850}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:Vazirmatn,Tahoma,system-ui,sans-serif;padding:18px;max-width:520px;margin-inline:auto}
+h1{font-size:22px;margin:4px 0}p.s{color:var(--mut);margin:0 0 16px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:14px;margin-bottom:12px}
+.lab{font-size:13px;color:var(--mut);margin-bottom:8px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.chip{flex:1;min-width:70px;padding:10px 6px;border-radius:12px;border:1px solid var(--bd);background:var(--card);color:var(--tx);font:inherit;font-size:14px}
+.chip.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+button.big{width:100%;padding:16px;border:0;border-radius:16px;background:var(--ac);color:#fff;font:inherit;font-size:17px;margin-bottom:10px}
+button.big.rec{background:#e0455f}
+button.big.sec{background:var(--ac2);color:var(--tx)}
+#note{font-size:40px;text-align:center;height:56px;direction:ltr;letter-spacing:2px}
+#info{text-align:center;color:var(--mut);font-size:13px;min-height:18px}
+.tr{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd);font-size:14px}.tr span{flex:1}.tr button{border:0;background:var(--ac2);color:var(--tx);border-radius:10px;padding:6px 10px;font:inherit}
+canvas{width:100%;height:90px;display:block;background:var(--ac2);border-radius:12px}
+</style>
+</head>
+<body>
+<h1>🌙 صدا به ساز</h1>
+<p class="s">بخون، ساز رو عوض کن، بشنو.</p>
+
+<div class="card"><div class="lab">ساز</div>
+<div class="row" id="inst">
+<button class="chip on" data-v="piano">🎹 پیانو</button><button class="chip" data-v="guitar">🎸 گیتار</button><button class="chip" data-v="bass">🎸 بیس</button><button class="chip" data-v="drums">🥁 درامز</button>
+</div></div>
+
+<div class="card" id="chordBox"><div class="lab">آکورد (برای پیانو و گیتار)</div>
+<div class="row" id="chord">
+<button class="chip on" data-v="none">تک‌نت</button><button class="chip" data-v="maj">ماژور</button><button class="chip" data-v="min">مینور</button>
+</div></div>
+
+<div class="card"><div id="note">–</div><div id="info">برای درامز با دهن بیت‌باکس کن: بوم (کیک)، تَک (اسنیر)، تس (های‌هت)</div><canvas id="cv" width="600" height="180"></canvas></div>
+
+<button class="big" id="rec">🎤 شروع ضبط</button>
+<button class="big sec" id="play">▶ پخش</button>
+<button class="big sec" id="mid">⬇ دانلود MIDI</button>
+
+<div class="card"><div class="lab">لایه‌ها</div><div id="tl"></div><label class="lab" style="display:block;margin-top:10px"><input type="checkbox" id="mon" checked> هنگام ضبط، لایه‌های قبلی رو پخش کن (با هدفون)</label></div>
+<script>
+const $=s=>document.querySelector(s);
+let inst='piano',chord='none',notes=[],hits=[],tracks=[],recording=false,ctx,an,buf,fbuf,t0,raf,stream;
+const NN=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function pick(id,cb){$(id).onclick=e=>{const b=e.target.closest('.chip');if(!b)return;$(id).querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));b.classList.add('on');cb(b.dataset.v)}}
+pick('#inst',v=>{inst=v;$('#chordBox').style.opacity=(v=='piano'||v=='guitar')?1:.4});
+pick('#chord',v=>chord=v);
+
+function detect(b,sr){
+  let rms=0;for(let i=0;i<b.length;i++)rms+=b[i]*b[i];rms=Math.sqrt(rms/b.length);
+  if(rms<.015)return{f:null,rms};
+  const min=Math.floor(sr/1000),max=Math.floor(sr/70);let best=-1,bi=0,c=[];
+  for(let l=min;l<=max;l++){let s=0;for(let i=0;i<b.length-l;i++)s+=b[i]*b[i+l];c[l]=s}
+  let c0=0;for(let i=0;i<b.length;i++)c0+=b[i]*b[i];
+  for(let l=min+1;l<max;l++){if(c[l]>c[l-1]&&c[l]>=c[l+1]&&c[l]>best){best=c[l];bi=l;if(c[l]>.9*c0)break}}
+  if(bi==0||best<.5*c0)return{f:null,rms};
+  return{f:sr/bi,rms};
+}
+
+let cur=null,cand=null,candN=0,lastRms=0,lastHit=-1;
+function tick(){
+  const t=(performance.now()-t0)/1000;
+  an.getFloatTimeDomainData(buf);an.getFloatFrequencyData(fbuf);
+  const{f,rms}=detect(buf,ctx.sampleRate);
+  if(inst=='drums'){
+    if(rms>.06&&rms>lastRms*1.6&&t-lastHit>.12){
+      let n=0,d=0;for(let i=1;i<fbuf.length;i++){const m=Math.pow(10,fbuf[i]/20);n+=i*m;d+=m}
+      const cen=(n/d)*ctx.sampleRate/an.fftSize;
+      const k=cen<500?'kick':cen<2500?'snare':'hat';
+      hits.push({t,k});lastHit=t;$('#note').textContent=k=='kick'?'🥁 کیک':k=='snare'?'🥁 اسنیر':'🥁 هایهت';
+    }
+    lastRms=rms*.5+lastRms*.5;
+  }else{
+    const m=f?Math.round(69+12*Math.log2(f/440)):null;
+    if(m!==null&&m>=36&&m<=88)$('#note').textContent=NN[m%12]+(Math.floor(m/12)-1);else if(m===null)$('#note').textContent='–';
+    if(m===(cand??null)){candN++}else{cand=m;candN=1}
+    if(candN>=3&&(cur?cur.m:null)!==cand){
+      if(cur){cur.d=t-cur.t;if(cur.d>.08)notes.push(cur)}
+      cur=cand!==null?{m:cand,t}:null;
+    }
+  }
+  drawW();raf=requestAnimationFrame(tick);
+}
+function drawW(){const c=$('#cv'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);g.strokeStyle=getComputedStyle(document.body).color;g.lineWidth=2;g.beginPath();for(let i=0;i<buf.length;i+=4){const x=i/buf.length*c.width,y=c.height/2+buf[i]*c.height*.9;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()}
+
+$('#rec').onclick=async()=>{
+  if(!recording){
+    try{
+      await Tone.start();
+      stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    }catch(e){$('#info').textContent='خطا: '+(e.name||'')+' | '+(e.message||'')+(window.self!==window.top?' | صفحه داخل یه قاب باز شده؛ لینک رو مستقیم تو سافاری باز کن.':'');return}
+    ctx=new (window.AudioContext||window.webkitAudioContext)();
+    try{await ctx.resume()}catch(e){}
+    const src=ctx.createMediaStreamSource(stream);an=ctx.createAnalyser();an.fftSize=2048;an.smoothingTimeConstant=0;src.connect(an);
+    buf=new Float32Array(an.fftSize);fbuf=new Float32Array(an.frequencyBinCount);
+    notes=[];hits=[];cur=null;cand=null;candN=0;lastRms=0;lastHit=-1;if($('#mon').checked&&tracks.some(t=>!t.mute))playAll(.05);t0=performance.now()+50;recording=true;
+    $('#rec').textContent='⏹ توقف';$('#rec').classList.add('rec');$('#info').textContent='دارم گوش می‌دم…';tick();
+  }else{
+    cancelAnimationFrame(raf);recording=false;
+    if(cur){cur.d=(performance.now()-t0)/1000-cur.t;if(cur.d>.08)notes.push(cur);cur=null}
+    stream.getTracks().forEach(t=>t.stop());ctx.close();
+    $('#rec').textContent='🎤 ضبط جدید';$('#rec').classList.remove('rec');if(notes.length||hits.length){tracks.push({inst,chord,notes:notes.slice(),hits:hits.slice(),mute:false});renderTracks()}stopAll();
+    $('#info').textContent=(notes.length||hits.length)?`${notes.length} نت و ${hits.length} ضربه ثبت شد. پخش رو بزن!`:'چیزی نشنیدم. نزدیک‌تر به میکروفون بخون.';
+    $('#note').textContent='–';
+  }
+};
+
+const chordSet={none:[0],maj:[0,4,7],min:[0,3,7]};
+function fit(m){if(inst!='bass')return m;while(m>52)m-=12;while(m<28)m+=12;return m}
+let synths=[];
+function build(){
+  synths.forEach(s=>s.dispose());synths=[];
+  if(inst=='piano'){const s=new Tone.PolySynth(Tone.Synth,{oscillator:{type:'triangle'},envelope:{attack:.005,decay:.5,sustain:.25,release:1.2}}).toDestination();s.volume.value=-6;synths=[s];return{n:s}}
+  if(inst=='guitar'){const f=new Tone.Filter(2600,'lowpass').toDestination();const s=new Tone.PolySynth(Tone.Synth,{oscillator:{type:'fatsawtooth',count:2,spread:12},envelope:{attack:.004,decay:.35,sustain:.12,release:.5}}).connect(f);s.volume.value=-10;synths=[s,f];return{n:s}}
+  if(inst=='bass'){const s=new Tone.MonoSynth({oscillator:{type:'square'},filter:{Q:2,type:'lowpass'},filterEnvelope:{attack:.01,decay:.2,sustain:.4,baseFrequency:150,octaves:2.5},envelope:{attack:.01,decay:.3,sustain:.6,release:.3}}).toDestination();s.volume.value=-4;synths=[s];return{n:s}}
+  const k=new Tone.MembraneSynth({pitchDecay:.05,octaves:6}).toDestination();
+  const sn=new Tone.NoiseSynth({noise:{type:'white'},envelope:{attack:.001,decay:.18,sustain:0}}).toDestination();
+  const hh=new Tone.NoiseSynth({noise:{type:'white'},envelope:{attack:.001,decay:.05,sustain:0}}).connect(new Tone.Filter(7000,'highpass').toDestination());
+  hh.volume.value=-10;synths=[k,sn,hh];return{k,sn,hh};
+}
+async function oldPlay(){
+  await Tone.start();
+  if(!notes.length&&!hits.length){$('#info').textContent='اول یه چیزی ضبط کن 🙂';return}
+  const o=build(),now=Tone.now()+.1;
+  if(inst=='drums'){
+    if(!hits.length){$('#info').textContent='برای درامز باید بیت‌باکس ضبط کنی.';return}
+    hits.forEach(h=>{const t=now+h.t;if(h.k=='kick')o.k.triggerAttackRelease('C1','8n',t);else if(h.k=='snare')o.sn.triggerAttackRelease('8n',t);else o.hh.triggerAttackRelease('32n',t)});
+  }else{
+    if(!notes.length){$('#info').textContent='برای این ساز باید نت بخونی، نه بیت‌باکس.';return}
+    notes.forEach(n=>{const t=now+n.t,d=Math.max(n.d,.1);
+      if(inst=='bass')o.n.triggerAttackRelease(Tone.Frequency(fit(n.m),'midi').toFrequency(),d,t);
+      else{const ch=chordSet[chord].map(i=>Tone.Frequency(n.m+i,'midi').toFrequency());o.n.triggerAttackRelease(ch,d,t)}});
+  }
+};
+
+function vl(n){let b=[n&127];while(n>>=7)b.unshift((n&127)|128);return b}
+function oldMid(){
+  const prog={piano:0,guitar:25,bass:33,drums:0}[inst],ch=inst=='drums'?9:0,ev=[];
+  const tk=s=>Math.round(s*960);
+  if(inst=='drums')hits.forEach(h=>{const p={kick:36,snare:38,hat:42}[h.k];ev.push([tk(h.t),[0x90|ch,p,100]],[tk(h.t)+120,[0x80|ch,p,0]])});
+  else notes.forEach(n=>{(inst=='bass'?[0]:chordSet[chord]).forEach(i=>{const p=inst=='bass'?fit(n.m):n.m+i;ev.push([tk(n.t),[0x90|ch,p,100]],[tk(n.t+Math.max(n.d,.1)),[0x80|ch,p,0]])})});
+  if(!ev.length){$('#info').textContent='چیزی برای خروجی گرفتن نیست.';return}
+  ev.sort((a,b)=>a[0]-b[0]);
+  let tr=[0,0xFF,0x51,3,0x07,0xA1,0x20];
+  if(inst!='drums')tr.push(0,0xC0|ch,prog);
+  let last=0;ev.forEach(e=>{tr.push(...vl(e[0]-last),...e[1]);last=e[0]});
+  tr.push(0,0xFF,0x2F,0);
+  const L=tr.length,hd=[0x4D,0x54,0x68,0x64,0,0,0,6,0,0,0,1,0x01,0xE0,0x4D,0x54,0x72,0x6B,L>>24&255,L>>16&255,L>>8&255,L&255];
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([new Uint8Array([...hd,...tr])],{type:'audio/midi'}));a.download='voice-'+inst+'.mid';a.click();
+};
+let allSyn=[];
+function stopAll(){allSyn.forEach(s=>{try{s.dispose()}catch(e){}});allSyn=[]}
+function mk(t){const si=inst;inst=t.inst;synths=[];const o=build();allSyn.push(...synths);inst=si;return o}
+function playAll(off){
+  stopAll();const now=Tone.now()+off,si=inst;
+  tracks.forEach(t=>{
+    if(t.mute)return;const o=mk(t);inst=t.inst;
+    if(t.inst=='drums')t.hits.forEach(h=>{const x=now+h.t;if(h.k=='kick')o.k.triggerAttackRelease('C1','8n',x);else if(h.k=='snare')o.sn.triggerAttackRelease('8n',x);else o.hh.triggerAttackRelease('32n',x)});
+    else t.notes.forEach(n=>{const x=now+n.t,d=Math.max(n.d,.1);
+      if(t.inst=='bass')o.n.triggerAttackRelease(Tone.Frequency(fit(n.m),'midi').toFrequency(),d,x);
+      else o.n.triggerAttackRelease(chordSet[t.chord].map(i=>Tone.Frequency(n.m+i,'midi').toFrequency()),d,x)});
+  });
+  inst=si;
+}
+$('#play').onclick=async()=>{await Tone.start();if(!tracks.some(t=>!t.mute)){$('#info').textContent='اول یه چیزی ضبط کن 🙂';return}playAll(.1)};
+const ico={piano:'🎹 پیانو',guitar:'🎸 گیتار',bass:'🎸 بیس',drums:'🥁 درامز'};
+function renderTracks(){
+  $('#tl').innerHTML=tracks.map((t,i)=>`<div class="tr"><span>${i+1}. ${ico[t.inst]} · ${t.inst=='drums'?t.hits.length+' ضربه':t.notes.length+' نت'}</span><button data-a="m" data-i="${i}">${t.mute?'🔇':'🔊'}</button><button data-a="d" data-i="${i}">🗑</button></div>`).join('')||'<div class="lab">هنوز لایه‌ای نیست</div>';
+}
+$('#tl').onclick=e=>{const b=e.target.closest('button');if(!b)return;const i=+b.dataset.i;if(b.dataset.a=='m')tracks[i].mute=!tracks[i].mute;else tracks.splice(i,1);renderTracks()};
+$('#mid').onclick=()=>{
+  const v=tracks.filter(t=>!t.mute);if(!v.length){$('#info').textContent='چیزی برای خروجی گرفتن نیست.';return}
+  const prog={piano:0,guitar:25,bass:33,drums:0},tk=s=>Math.round(s*960),fb=m=>{while(m>52)m-=12;while(m<28)m+=12;return m};
+  const chunk=tr=>{const L=tr.length;return[0x4D,0x54,0x72,0x6B,L>>24&255,L>>16&255,L>>8&255,L&255,...tr]};
+  const ch=[chunk([0,0xFF,0x51,3,7,0xA1,0x20,0,0xFF,0x2F,0])];let nc=0;
+  v.forEach(t=>{
+    let c=9;if(t.inst!='drums'){if(nc==9)nc=10;c=Math.min(nc++,15)}
+    const ev=[];
+    if(t.inst=='drums')t.hits.forEach(h=>{const p={kick:36,snare:38,hat:42}[h.k];ev.push([tk(h.t),[0x90|c,p,100]],[tk(h.t)+120,[0x80|c,p,0]])});
+    else t.notes.forEach(n=>{(t.inst=='bass'?[0]:chordSet[t.chord]).forEach(i=>{const p=t.inst=='bass'?fb(n.m):n.m+i;ev.push([tk(n.t),[0x90|c,p,100]],[tk(n.t+Math.max(n.d,.1)),[0x80|c,p,0]])})});
+    ev.sort((a,b)=>a[0]-b[0]);
+    let tr=[];if(t.inst!='drums')tr.push(0,0xC0|c,prog[t.inst]);
+    let last=0;ev.forEach(e=>{tr.push(...vl(e[0]-last),...e[1]);last=e[0]});tr.push(0,0xFF,0x2F,0);ch.push(chunk(tr));
+  });
+  const hd=[0x4D,0x54,0x68,0x64,0,0,0,6,0,1,0,ch.length,0x01,0xE0];
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([new Uint8Array([...hd,...ch.flat()])],{type:'audio/midi'}));a.download='voice-layers.mid';a.click();
+};
+renderTracks();
+</script>
+</body>
+</html>
